@@ -116,8 +116,7 @@ function getPaletteColor() {
 
 async function main() {
     let collections = await getBangumiCollections('838109')
-    let animes = await getAnimeCollectionsPoints(collections);
-    animes = animes.map(anime => processingAnimeEntry(anime));
+    let [animes, points] = await getAnimeCollectionsPoints(collections);
 
     animes = autoMergingByAnime(animes);
     animes = autoMergingByCount(animes);
@@ -159,33 +158,24 @@ function array_to_dict(arr, get_key) {
 
 // region processing entries
 
-function processingAnimeEntry(anime) {
-    const color = getPaletteColor();
-    anime.points = anime.points.map(
-        point => ({ ...point, color, anime_name: anime.name }),
-    );
-    return anime;
-}
-
 function merge(a1, a2) {
     console.log(a1, a2);
     if (!a1?.points || !a2?.points) return;
-    a1.name = a1.name + " / " + a2.name;
-    a1.names = [a1.name, a2.name];
+    a1.name = [a1.name, a2.name];
     a1.count += a2.count;
     a1.points.push(...a2.points);
     return a1;
 }
-function remove(arr, index) {
-    return arr.filter((v, i) => i !== index);
+
+Array.prototype.remove = function (index) {
+    return this.filter((v, i) => i !== (index < 0 ? this.length + index : index));
 }
-function insert(item, arr, index) {
-    return arr.slice(0, index).concat(item, arr.slice(index));
+Array.prototype.insert = function (item, index) {
+    return this.slice(0, index).concat(item, this.slice(index));
 }
 
 
 function mergeAll(animes, ids) {
-    animes = dict_to_array(animes);
     if (ids.length < 1) return;
 
     let a1 = animes.find(a => a.id === ids[0])
@@ -193,12 +183,11 @@ function mergeAll(animes, ids) {
         let j = animes.findIndex(a => a.id === ids[i])
         let a2 = animes[j];
         merge(a1, a2);
-        animes = remove(animes, j);
+        animes.remove(j);
     }
-    return array_to_dict(animes, x => x.id);
+    return animes;
 }
 function autoMergingByAnime(animes) {
-    animes = dict_to_array(animes);
     for (let i = 0; i < animes.length; i++) {
         let a1 = animes[i];
 
@@ -206,19 +195,19 @@ function autoMergingByAnime(animes) {
             let a2 = animes[j];
             if (a1.name.length > 5 && (a1.name.match(/^.{5}/g)?.[0] === a2.name.match(/^.{5}/g)?.[0])) {
                 merge(a1, a2);
-                animes = remove(animes, j);
+                animes.remove(j);
                 j--;
             }
         }
     }
-    return array_to_dict(animes, x => x.id);
+    return animes;
 }
 function autoMergingByCount(animes, limit = 10) {
     animes = dict_to_array(animes).map((x, i) => ({...x, points_count: x.points.length, index: i}));
     animes = animes.sort((a, b) => b.points_count - a.points_count);
     while (animes.length > limit) {
         merge(animes[limit-1], animes[limit]);
-        animes = remove(animes, limit);
+        animes.remove(limit);
     }
     animes = animes.sort((a, b) => a.index - b.index);
     return animes;
@@ -230,8 +219,8 @@ function mergeReduceTo(animes, count) {
 
     while (animes.length > count) {
         let val = merge(animes[animes.length - 1], animes[animes.length - 2]);
-        animes = remove(animes, animes.length - 1);
-        animes = remove(animes, animes.length - 2);
+        animes.remove(animes.length - 1);
+        animes.remove(animes.length - 2);
         let min = 0, max = animes.length - 1, i = Math.ceil((min+max)/2)
         while (min <= max) {
             if (val.points.length <= animes[i].points.length) {
@@ -242,7 +231,7 @@ function mergeReduceTo(animes, count) {
             }
             i = Math.ceil((min+max)/2)
         }
-        animes = insert(val, animes, i);
+        animes.insert(val, i);
         console.log(animes)
     }
 
@@ -319,12 +308,14 @@ async function getAnimePoints(id) {
 
 async function getAnimeCollectionsPoints(animes_info) {
     let animes = {}
+    let points = []
     let count = 0
     let promises = []
     for (let {id, name} of animes_info) {
         promises.push(getAnimePoints(id).then(res => {
             if (!res || res.length < 1) res = [];
-            animes[id] = { id, name, points: res, count: 1 };
+            animes[id] = { id, name }
+            points.push({ name, points: res.map(p => ({ ...p, anime: animes[id] })), count: 1 });
         }));
         count++;
 
@@ -332,7 +323,7 @@ async function getAnimeCollectionsPoints(animes_info) {
             await Promise.all(promises);
         }
     }
-    return animes;
+    return [animes, points];
 }
 
 
@@ -344,8 +335,9 @@ async function getBangumiCollections(id, subject = 2, type = 2) {
         const url = `https://api.bgm.tv/v0/users/${id}/collections?${
             subject ? `subject_type=${subject}&` : ""
         }type=${type}&limit=${BGM_COLLECTION_OFFSET}&offset=${offset}`
-        console.log(url)
+        console.log("FETCH: ", url)
         let res = await (await fetch(url)).json();
+        console.log(res)
         collections.push(...res.data);
         total = res.total;
         offset += BGM_COLLECTION_OFFSET;
@@ -580,12 +572,20 @@ const user = (() => {
                 func(...params)
             }
         },
+
+        /** @type {{Object}} */
+        animes: JSON.parse(localStorage.getItem("animes")) ?? {},
+        /** @type {{}[]} */
         collections: JSON.parse(localStorage.getItem("collections")) ?? [],
+
+        /** set this.collections, <br/>
+         *  auto fetch points data and call on_update_data while set
+         *  @param { Object[] | ((c: Object[]) =>  Object[]) } collections */
         set_collections(collections) {
-            this.collections = dict_to_array(collections);
+            this.collections = typeof collections === "function" ? collections(this.collections) : collections;
             let req = []
-            for (let collection of collections) {
-                if (!Array.isArray(collection.points)) {
+            for (let collection of this.collections) {
+                if (!Array.isArray(collection?.points)) {
                     req.push(collection)
                 }
             }
@@ -593,7 +593,6 @@ const user = (() => {
                 getAnimeCollectionsPoints(req).then((res) => {
                     user.save_data(res)
                 })
-
             }
             else {
                 this.call(this.on_update_data);
@@ -605,7 +604,14 @@ const user = (() => {
         clean_selected() {
             this.selected_animes = this.selected_animes.filter(x => this.collections.find(anime => anime.id === x.id));
         },
+        /** @type {function[]}
+         *  call when points data updated */
         on_update_data: [],
+
+        /** @type {(param: {[key: number]: Object}) => void}
+         *  save points data to this.collections, <br/>
+         *  data structure should be like: <br/>
+         *  { id: { key: value }, id2: ... }*/
         save_data(res) {
             for (let anime of this.collections){
                 let data = res[anime.id];
@@ -617,9 +623,14 @@ const user = (() => {
             this.call(this.on_update_data);
         },
 
+
+        /** @type {number[]}
+         *  selected_animes id */
         selected_animes: [],
         all_selected: 0,
 
+        /** @type {Function[]}
+         *  call when selected updated */
         on_selected: [],
 
         update_selected_state() {
@@ -731,6 +742,7 @@ function getBangumiComponent(refresh_list) {
         innerText: "获取",
         onclick: ev => {
             getBangumiCollections(user.bgm_id).then((res) => {
+                console.log("BGM Collection: ", res)
                 user.set_collections(res);
             })
         }});
@@ -787,9 +799,7 @@ function getListEditComponent() {
         id: "delete-button",
         innerText: "删除",
         onclick: ev => {
-            user.set_collections(
-                user.collections.filter(x => !user.selected_animes.includes(x.id))
-            );
+            user.set_collections(c => c.filter(x => !user.selected_animes.includes(x.id)));
         }
     })
     let merge_button = addElement("button", {
@@ -806,7 +816,7 @@ function getListEditComponent() {
         innerText: "自动合并",
         onclick: ev => {
             user.set_collections(
-                dict_to_array(autoMergingByAnime(user.collections.filter(x => x.points && x.points.length > 0)))
+                autoMergingByAnime(user.collections.filter(x => x.points && x.points.length > 0))
             );
         }
     })
@@ -826,7 +836,6 @@ function getGetPointsComponent() {
             ev.target.style.backgroundColor = "var(--c-darker)"
             getAnimeCollectionsPoints(user.get_selected_collection()).then((res) => {
                 console.log(res)
-                res = res.map(entry => processingAnimeEntry(entry));
                 ev.target.style.backgroundColor = null;
                 user.save_data(res);
             })
@@ -863,7 +872,7 @@ function getAnimeListComponent() {
         li.append(
             checkbox,
             counter,
-            addElement("p", {innerText: anime.name}));
+            addElement("p", {innerText: Array.isArray(anime.name) ? anime.name.join(" / ") : anime.name}));
         anime_list.append(li);
     }
     return anime_list
