@@ -171,11 +171,16 @@ function merge(a1, a2) {
     console.log(a1, a2);
     if (!a1?.points || !a2?.points) return;
     a1.name = a1.name + " / " + a2.name;
+    a1.names = [a1.name, a2.name];
     a1.count += a2.count;
     a1.points.push(...a2.points);
+    return a1;
 }
 function remove(arr, index) {
     return arr.filter((v, i) => i !== index);
+}
+function insert(item, arr, index) {
+    return arr.slice(0, index).concat(item, arr.slice(index));
 }
 
 
@@ -217,6 +222,31 @@ function autoMergingByCount(animes, limit = 10) {
     }
     animes = animes.sort((a, b) => a.index - b.index);
     return animes;
+}
+
+function mergeReduceTo(animes, count) {
+    animes = dict_to_array(animes);
+    animes = animes.sort((a, b) => b.points.length - a.points.length);
+
+    while (animes.length > count) {
+        let val = merge(animes[animes.length - 1], animes[animes.length - 2]);
+        animes = remove(animes, animes.length - 1);
+        animes = remove(animes, animes.length - 2);
+        let min = 0, max = animes.length - 1, i = Math.ceil((min+max)/2)
+        while (min <= max) {
+            if (val.points.length <= animes[i].points.length) {
+                min = i+1
+            }
+            else if (val.points.length > animes[i].points.length) {
+                max = i-1
+            }
+            i = Math.ceil((min+max)/2)
+        }
+        animes = insert(val, animes, i);
+        console.log(animes)
+    }
+
+    return array_to_dict(animes, x => x.id);
 }
 
 // endregion
@@ -289,10 +319,18 @@ async function getAnimePoints(id) {
 
 async function getAnimeCollectionsPoints(animes_info) {
     let animes = {}
+    let count = 0
+    let promises = []
     for (let {id, name} of animes_info) {
-        let points = await getAnimePoints(id)
-        if (!points || points.length < 1) points = [];
-        animes[id] = { id, name, points, count: 1 };
+        promises.push(getAnimePoints(id).then(res => {
+            if (!res || res.length < 1) res = [];
+            animes[id] = { id, name, points: res, count: 1 };
+        }));
+        count++;
+
+        if (count >= 5) {
+            await Promise.all(promises);
+        }
     }
     return animes;
 }
@@ -538,7 +576,6 @@ const user = (() => {
         },
 
         call (func_array, params = []) {
-            console.log(func_array)
             for (let func of func_array) {
                 func(...params)
             }
@@ -596,7 +633,7 @@ const user = (() => {
                 this.all_selected = 0;
             }
 
-            this.call(this.on_selected, [this.selected_animes.length, this.get_selected_collection()])
+            this.call(this.on_selected)
         },
 
         select(id) {
@@ -715,18 +752,20 @@ function getSelectAllComponent() {
             user.select_all();
     }
     let button_text = "全选";
-    let filtered_selected = user.selected_animes.filter(id => user.collections.find(anime => anime.id === id));
-    console.log()
-    let entries_count = filtered_selected.length;
-    let points_count = [0, ...filtered_selected]
-        .reduce((prev, current) => (current?.points?.length ?? 0) + prev);
+
     let refresh_button_text = () => {
+        let filtered_selected = user.selected_animes.filter(id => user.collections.find(anime => anime.id === id));
+        let entries_count = filtered_selected.length;
+        let points_count = [0, ...filtered_selected.map(id => user.collections.find(anime => anime.id === id)?.points?.length ?? 0)]
+            .reduce((prev, current) => current + prev);
+        console.log(filtered_selected)
+        console.log([0, ...filtered_selected.map(x => x?.points?.length ?? 0)])
         list_select_all_button.innerText = button_text + ` (${entries_count}条目, ${points_count}地点)`
     }
     refresh_button_text();
     user.on_update_data.push(refresh_button_text);
 
-    user.on_selected.push((count, selected) => {
+    user.on_selected.push(() => {
         if (user.all_selected > 0) {
             button_text = "取消选择";
         }
@@ -786,9 +825,10 @@ function getGetPointsComponent() {
         onclick: ev => {
             ev.target.style.backgroundColor = "var(--c-darker)"
             getAnimeCollectionsPoints(user.get_selected_collection()).then((res) => {
-                ev.target.style.backgroundColor = null
-                console.log(res);
-                user.save_data(res)
+                console.log(res)
+                res = res.map(entry => processingAnimeEntry(entry));
+                ev.target.style.backgroundColor = null;
+                user.save_data(res);
             })
         }});
     get_points_button_wrapper.appendChild(get_points_button);
@@ -802,10 +842,7 @@ function getAnimeListComponent() {
         let checkbox = addElement("input", {
             className: "anime-list-checkbox",
             type: "checkbox",
-            checked: user.selected_animes.includes(anime.id)
-        })
-        let li = addElement("li", {
-            className: "anime-list-item",
+            checked: user.selected_animes.includes(anime.id),
             onclick: () => {
                 if (user.is_selected(anime.id)){
                     user.unselect(anime.id);
@@ -816,6 +853,9 @@ function getAnimeListComponent() {
                     checkbox.checked = true;
                 }
             }
+        })
+        let li = addElement("li", {
+            className: "anime-list-item"
         });
         let count = user?.collections?.find(x => x.id === anime.id)?.points?.length ?? 0;
         let counter = addElement("div", {className: "anime-list-item-count", innerText: `${count}`})
