@@ -332,6 +332,14 @@ async function parseAnimations(collections){
     return TEMP.format(comb_style, comb_points)
 }
 
+function download(data) {
+    const file = new File(data, "file.txt", {type: 'application/octet-stream'});
+    let url = URL.createObjectURL(file);
+    window.open(url);
+    URL.revokeObjectURL(url); // This seems to work here.
+}
+
+
 // endregion
 
 
@@ -1129,7 +1137,9 @@ function addPanel(parent) {
         name: "export-button",
         buttons: [
             [ "export-button", "导出选择", async ev => {
-                console.log(await parseAnimations(user.collections.filter(x => user.selected_animes.includes(x.id))));
+                const data = await parseAnimations(user.collections.filter(x => user.selected_animes.includes(x.id)))
+                console.log(data);
+                download([data]);
             }, { "data-info": "注意: google My Maps 一次只能导入10个项目和2000个点位" }]
         ]
     })
