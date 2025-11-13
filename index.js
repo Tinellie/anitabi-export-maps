@@ -180,11 +180,18 @@ function merge(a1, a2, is_same_series = false) {
     return a1;
 }
 
-Array.prototype.remove = function (index) {
+Array.prototype.remove_at = function (index) {
     return this.filter((v, i) => i !== (index < 0 ? this.length + index : index));
+}
+/** @param {any} items*/
+Array.prototype.remove_items = function (...items) {
+    return this.filter(x => !items.includes(x));
 }
 Array.prototype.insert = function (item, index) {
     return this.slice(0, index).concat(item, this.slice(index));
+}
+Array.prototype.unique = function () {
+    return this.filter((x, i) => this.indexOf(x) === i);
 }
 
 /** @param {Array} collections
@@ -198,7 +205,7 @@ function mergeAll(collections, ids) {
         let j = collections.findIndex(a => a.id === ids[i])
         let a2 = collections[j];
         merge(a1, a2);
-        collections = collections.remove(j);
+        collections = collections.remove_at(j);
     }
     return collections;
 }
@@ -213,7 +220,7 @@ function autoMergingByAnime(collections) {
             let n2 = Array.isArray(a2.name) ? a2.name[0] : a2.name;
             if (n1.length > 5 && n1.match(/^.{5}/g)?.[0] === n2.match(/^.{5}/g)?.[0]) {
                 merge(a1, a2, true);
-                collections = collections.remove(j);
+                collections = collections.remove_at(j);
                 j--;
             }
         }
@@ -227,7 +234,7 @@ function autoMergingByCount(collections, limit = 10) {
     collections = collections.sort((a, b) => b.points_count - a.points_count);
     while (collections.length > limit) {
         merge(collections[limit-1], collections[limit]);
-        collections = collections.remove(limit);
+        collections = collections.remove_at(limit);
     }
     collections = collections.sort((a, b) => a.index - b.index);
     return collections;
@@ -240,8 +247,8 @@ function mergeReduceTo(collections, count) {
 
     while (collections.length > count) {
         let val = merge(collections[collections.length - 1], collections[collections.length - 2]);
-        collections = collections.remove(collections.length - 1);
-        collections = collections.remove(collections.length - 1);
+        collections = collections.remove_at(collections.length - 1);
+        collections = collections.remove_at(collections.length - 1);
         let min = 0, max = collections.length - 1, i = Math.ceil((min+max)/2)
         while (min <= max) {
             if (val.points.length <= collections[i].points.length) {
@@ -345,37 +352,37 @@ function download(data) {
 
 // region fetch data
 
-async function getAnimePoints(id) {
-    console.warn("Fetching #", id)
-    const res = await fetch(`https://api.anitabi.cn/bangumi/${id}/points/detail`)
-    const data = await res.json()
-    console.log("Finished Fetching #", id)
-    console.log("data:", data)
-    return data
-}
 
-/** @param {Array} collections
+const MAX_REQUESTS = 5;
+/** @param {number[]} ids
  *  @return {Promise<[{[$Keys: number]: Object}, Array]>}*/
-async function getAnimeCollectionsPoints(collections) {
-    let animes = {}
-    let points = []
-    let count = 0
-    let promises = []
-    for (let {id, name} of collections) {
+async function getAnimesPoints(ids) {
+
+    async function getAnimePoints(id) {
+        console.warn("Fetching #", id);
+        const res = await fetch(`https://api.anitabi.cn/bangumi/${id}/points/detail`);
+        const data = await res.json();
+        console.log("Finished Fetching #", id);
+        console.log("data:", data);
+        return data;
+    }
+
+    let points = {};
+    let count = 0, promises = [];
+    for (let id of ids) {
         promises.push(getAnimePoints(id).then(res => {
             if (!res || res.length < 1) res = [];
-            animes[id] = { id, name, unique: res.length > 150 }
-            points.push({ id, name, points: res.map(p => ({ ...p, anime: animes[id] })), count: 1 });
+            points[id] = res;
         }));
         count++;
 
-        if (count >= 5) {
+        if (count >= MAX_REQUESTS) {
             await Promise.all(promises);
             promises = [];
         }
     }
     await Promise.all(promises);
-    return [animes, points];
+    return points;
 }
 
 
@@ -396,7 +403,10 @@ async function getBangumiCollections(id, subject = 2, type = 2) {
     }
     return collections.map(item => ({
         id: item.subject.id,
-        name: item.subject.name
+        name: item.subject.name,
+        name_cn: item.subject.name_cn,
+        release_date: item.subject.date,
+        update_date: item.updated_at,
     }));
 }
 
@@ -760,7 +770,33 @@ function addElement(tag, attr = {}) {
     return element;
 }
 
+
+
+class Group {
+    constructor(ids, keywords = []) {
+        this.ids = ids.unique();
+        this.keywords = keywords.unique();
+    }
+}
+/** distinguish Anime ID and Group objects in the collections
+ * @return {[Array.<number>, Array.<Group>]}[animes, groups] */
+function distinguish (items) {
+    let distinguished = [[], []];
+    for (let item of items) {
+        distinguished[(item instanceof Group) ? 1 : 0].push(item);
+    }
+    return distinguished;
+}
 const user = (() => {
+
+    /** index: `number` id of anime<br/>
+     * value: anime object
+     * @type {{}} */
+    const animes_data = JSON.parse(localStorage.getItem("animes")) ?? {}
+
+    /** @type {Array.<number|Group>}*/
+    let selected = [];
+
     return {
         init () {
             console.warn("init");
@@ -769,6 +805,9 @@ const user = (() => {
                 this.clean_selected.call(this);
                 localStorage.setItem("collections", JSON.stringify(this.collections));
             }, 2000]);
+
+
+
             return this;
         },
 
@@ -780,122 +819,218 @@ const user = (() => {
             }
         },
 
-        /** @type {{Object}} */
-        animes: JSON.parse(localStorage.getItem("animes")) ?? {},
-        /** @type {{}[]} */
-        collections: JSON.parse(localStorage.getItem("collections")) ?? [],
 
-        /** set this.collections, <br/>
-         *  auto fetch points data and call on_update_data while set
-         *  @param { Object[] | ((c: Object[]) =>  Object[]) } collections */
-        async set_collections(collections) {
-            console.warn("set_collections");
-            console.log(collections);
+        collections: (function () {
+            /** @type {Array.<number|Group>}*/
+            let data = JSON.parse(localStorage.getItem("collections")) ?? [];
+            return {
+                data: data,
+                /** check if given id is included in the collections*/
+                includes (id) {
+                    return Boolean(data.find(x => (x instanceof Group) ? x.ids.find(x2 => x2 === id) : x === id))
+                },
 
-            this.collections = typeof collections === "function" ? collections(this.collections) : collections;
-            // let collections2 = typeof collections === "function" ? collections(this.collections) : collections;
-            // if (collections2.length === this.collections.length &&
-            //     collections2.filter(x => !this.collections.find(x2 => x2.id === x.id)).length > 0) {
-            //     this.collections = collections2;
-            // }
-            // else return false
-
-
-            let req = []
-            for (let collection of this.collections) {
-                if (!Array.isArray(collection?.points)) {
-                    req.push(collection)
+                /** remove given items from collections
+                 * @param {number|Group} items*/
+                remove (...items) {
+                    data = data.remove_items(...items);
+                },
+                /** push animes that did not pushed into the collections
+                 * @param {number[]} ids */
+                push_animes (...ids) {
+                    data.push(...ids.filter(x => !this.includes(x)));
+                },
+                /** group Animes with given ID
+                 * @param {number[]} ids
+                 * @param {string[]} keywords
+                 * @return `false` some animes not included in the collection*/
+                group (ids, keywords = []) {
+                    if (ids.some(id => !this.includes(id))) return false;
+                    this.remove(...ids);
+                    data.push(new Group(ids, keywords));
+                    return true
+                },
+                /** merge given items (Animes ID / Groups) into a single Group
+                 * @param {(number|Group)[]} items
+                 * @return `false` some items not included in the collection*/
+                merge (items) {
+                    if (items.some(x => !this.includes(x))) return false;
+                    this.remove(...items);
+                    let [ids, groups] = distinguish(items);
+                    let group = new Group(
+                        groups.map(g => g.ids).flat().concat(ids),
+                        groups.map(g => g.keywords).flat()
+                    )
+                    data.push(group);
+                    return true
                 }
             }
+        })(),
 
-            if (req.length > 0) {
-                getAnimeCollectionsPoints(req).then((res) => {
-                    let [anime, collections] = res
-                    user.save_data(collections)
-                })
-            }
-            else {
-                this.call(this.on_update_data);
-            }
-            return true;
-        },
-        clear_collections () {
-            this.set_collections([]);
-        },
-        clean_selected() {
-            this.selected_animes = this.selected_animes.filter(x => this.collections.find(anime => anime.id === x.id));
-        },
-        /** @type {[function, number][]}
-         *  call when points data updated */
-        on_update_data: [],
 
-        /** @type {(param: {[key: number]: Object}) => void}
-         *  save points data to this.collections, <br/>
-         *  data structure should be like: <br/>
-         *  { id: { key: value }, id2: ... }*/
-        save_data(res) {
-            console.warn("save_data");
-            console.log(res)
-            for (let anime of this.collections){
-                let data = res.find(x => x.id === anime.id);
-                console.log(data);
-                for (let key in data) {
-                    anime[key] = data[key];
+        add_animes(animes) {
+            let new_ids = [];
+            for (const anime of animes) {
+                // if is new item
+                if (! anime.id in animes_data){
+                    animes_data[anime.id] = anime;
+                    new_ids.push(anime.id);
                 }
             }
-            this.call(this.on_update_data);
+            getAnimesPoints(new_ids).then(points => {
+                for (const id in points) {
+                    animes_data[id].points = points[id];
+                }
+                this.collections.push_animes(new_ids);
+                this.on_update_data?.call(this);
+                console.warn("UPDATE DATA");
+            })
+
         },
 
-        save_anime(animes) {
-            for (let id in animes) {
-                this.animes[id] = animes[id];
+        /** @type {function|null}*/
+        on_update_data: null,
+        /** @type {function|null}*/
+        on_update_select: null,
+
+        selected: (function () {
+            /** @param {Array.<number|Group>} s*/
+            function set_selected(s) {
+                let [_, groups] = distinguish(s);
+                s = s.filter(item => (item instanceof Group) || !groups.some(g => g.ids.includes(item)));
+                selected = s.unique();
+                this.on_update_select?.call(this);
             }
-        },
-
-
-        /** @type {number[]}
-         *  selected_animes id */
-        selected_animes: [],
-        all_selected: 0,
-
-        /** @type {Function[]}
-         *  call when selected updated */
-        on_selected: [],
-
-        update_selected_state() {
-            if (this.selected_animes.length >= this.collections.length && this.collections.every(x => this.selected_animes.includes(x.id))) {
-                this.all_selected = 2;
+            return {
+                /** @param {number|Group} item*/
+                includes(item) {
+                    return selected.includes(item)
+                },
+                /** @param {number|Group} items*/
+                add(...items) {
+                    set_selected(selected.concat(items));
+                },
+                /** @param {number|Group} items*/
+                remove(...items) {
+                    // let in_groups = items.filter(x => (!x instanceof Group) && (!selected.includes(x)));
+                    let new_selected = selected.map(x => items.includes(x) ? [] : (
+                        ((x instanceof Group) && x.ids.some(id => items.includes(id))) ? x.ids.filter(id => !items.includes(id)) : [x]
+                    )).flat()
+                    set_selected(new_selected);
+                },
+                count_points() {
+                    return [0, ...selected.map(x => (x instanceof Group) ? x.ids : [x]).flat()
+                        .map(id => animes_data[id].points.length)].reduce((a, b) => a + b);
+                }
             }
-            else if (this.selected_animes.length > 0) {
-                this.all_selected = 1;
-            }
-            else {
-                this.all_selected = 0;
-            }
+        }),
 
-            this.call(this.on_selected)
-        },
+        // /** set this.collections, <br/>
+        //  *  auto fetch points data and call on_update_data while set
+        //  *  @param { Object[] | ((c: Object[]) =>  Object[]) } collections */
+        // async set_collections(collections) {
+        //     console.warn("set_collections");
+        //     console.log(collections);
+        //
+        //     this.collections = typeof collections === "function" ? collections(this.collections) : collections;
+        //     // let collections2 = typeof collections === "function" ? collections(this.collections) : collections;
+        //     // if (collections2.length === this.collections.length &&
+        //     //     collections2.filter(x => !this.collections.find(x2 => x2.id === x.id)).length > 0) {
+        //     //     this.collections = collections2;
+        //     // }
+        //     // else return false
+        //
+        //
+        //     let req = []
+        //     for (let collection of this.collections) {
+        //         if (!Array.isArray(collection?.points)) {
+        //             req.push(collection)
+        //         }
+        //     }
+        //
+        //     if (req.length > 0) {
+        //         getAnimesPoints(req).then((res) => {
+        //             let [anime, collections] = res
+        //             user.save_data(collections)
+        //         })
+        //     }
+        //     else {
+        //         this.call(this.on_update_data);
+        //     }
+        //     return true;
+        // },
+        // clear_collections () {
+        //     this.set_collections([]);
+        // },
+        // clean_selected() {
+        //     this.selected_animes = this.selected_animes.filter(x => this.collections.find(anime => anime.id === x.id));
+        // },
 
-        select(id) {
-            this.select_all([id])
-        },
-        select_all(ids = this.collections.map(item => item.id)) {
-            this.selected_animes.push(...ids);
-            this.update_selected_state()
-        },
-        unselect(id) {
-            this.unselect_all([id])
-        },
-        unselect_all(ids = this.selected_animes) {
-            this.selected_animes = this.selected_animes.filter(selected => !ids.includes(selected));
-            this.update_selected_state()
-        },
-        is_selected(id) {
-            return this.selected_animes.includes(id);
-        },
-        get_selected_collection() {
-            return this.collections.filter(x => this.selected_animes.includes(x.id));
-        },
+        // /** @type {[function, number][]}
+        //  *  call when points data updated */
+        // on_update_data: [],
+        //
+        // /** @type {(param: {[key: number]: Object}) => void}
+        //  *  save points data to this.collections, <br/>
+        //  *  data structure should be like: <br/>
+        //  *  { id: { key: value }, id2: ... }*/
+        // save_data(res) {
+        //     console.warn("save_data");
+        //     console.log(res)
+        //     for (let anime of this.collections){
+        //         let data = res.find(x => x.id === anime.id);
+        //         console.log(data);
+        //         for (let key in data) {
+        //             anime[key] = data[key];
+        //         }
+        //     }
+        //     this.call(this.on_update_data);
+        // },
+        //
+        //
+        // /** @type {number[]}
+        //  *  selected_animes id */
+        // selected_animes: [],
+        // all_selected: 0,
+        //
+        // /** @type {Function[]}
+        //  *  call when selected updated */
+        // on_selected: [],
+
+        // update_selected_state() {
+        //     if (this.selected_animes.length >= this.collections.length && this.collections.every(x => this.selected_animes.includes(x.id))) {
+        //         this.all_selected = 2;
+        //     }
+        //     else if (this.selected_animes.length > 0) {
+        //         this.all_selected = 1;
+        //     }
+        //     else {
+        //         this.all_selected = 0;
+        //     }
+        //
+        //     this.call(this.on_selected)
+        // },
+        //
+        // select(id) {
+        //     this.select_all([id])
+        // },
+        // select_all(ids = this.collections.map(item => item.id)) {
+        //     this.selected_animes.push(...ids);
+        //     this.update_selected_state()
+        // },
+        // unselect(id) {
+        //     this.unselect_all([id])
+        // },
+        // unselect_all(ids = this.selected_animes) {
+        //     this.selected_animes = this.selected_animes.filter(selected => !ids.includes(selected));
+        //     this.update_selected_state()
+        // },
+        // is_selected(id) {
+        //     return this.selected_animes.includes(id);
+        // },
+        // get_selected_collection() {
+        //     return this.collections.filter(x => this.selected_animes.includes(x.id));
+        // },
         bgm_id: localStorage.getItem("bgm_id"),
     }.init()
 })()
@@ -945,6 +1080,7 @@ function addPanel(parent) {
     let button_text = "全选";
 
     let refresh_button_text = () => {
+
         let filtered_selected = user.selected_animes.filter(id => user.collections.find(anime => anime.id === id));
         let entries_count = filtered_selected.length;
         let points_count = [0, ...filtered_selected.map(id => user.collections.find(anime => anime.id === id)?.points?.length ?? 0)]
@@ -1187,7 +1323,7 @@ function getBangumiComponent(refresh_list) {
         onclick: ev => {
             getBangumiCollections(user.bgm_id).then((res) => {
                 console.log("BGM Collection: ", res)
-                user.set_collections(res);
+                user.add_animes(res);
             })
         }});
     bgm_panel.append(bgm_id_input_label, bgm_id_input, bgm_fetch_button)
@@ -1217,23 +1353,23 @@ function getButtonRowComponent(row) {
 }
 
 
-function getGetPointsComponent() {
-    let get_points_button_wrapper = addElement("span", {id: "get-points-button-wrapper"});
-    let get_points_button = addElement("button", {
-        id: "get-points-button",
-        className: "expm-button",
-        innerText: "获取巡礼点",
-        onclick: ev => {
-            ev.target.style.backgroundColor = "var(--c-darker)"
-            getAnimeCollectionsPoints(user.get_selected_collection()).then((res) => {
-                console.log(res)
-                ev.target.style.backgroundColor = null;
-                user.save_data(res);
-            })
-        }});
-    get_points_button_wrapper.appendChild(get_points_button);
-    return get_points_button_wrapper;
-}
+// function getGetPointsComponent() {
+//     let get_points_button_wrapper = addElement("span", {id: "get-points-button-wrapper"});
+//     let get_points_button = addElement("button", {
+//         id: "get-points-button",
+//         className: "expm-button",
+//         innerText: "获取巡礼点",
+//         onclick: ev => {
+//             ev.target.style.backgroundColor = "var(--c-darker)"
+//             getAnimesPoints(user.get_selected_collection()).then((res) => {
+//                 console.log(res)
+//                 ev.target.style.backgroundColor = null;
+//                 user.save_data(res);
+//             })
+//         }});
+//     get_points_button_wrapper.appendChild(get_points_button);
+//     return get_points_button_wrapper;
+// }
 
 function getAnimeListComponent() {
 
