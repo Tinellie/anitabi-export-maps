@@ -414,7 +414,7 @@ async function getBangumiCollections(id, subjects = [2], types = [2]) {
 
 // region gui
 
-const PANEL_HEIGHT = 500;
+const PANEL_HEIGHT = 600;
 const PANEL_HEADER_HEIGHT = 50;
 
 // language=CSS noinspection
@@ -1026,7 +1026,8 @@ function addPanel(parent) {
 
     let anime_list_wrapper = addElement("div", {id: "anime-list-wrapper"});
 
-    let anime_list_header = addElement("div", {id: "anime-list-header"});
+    let anime_list_header = addElement("div", {id: "anime-list-header", innerText: "test"});
+    anime_list_wrapper.append(anime_list_header);
 
 
     let anime_list = addElement("ul", {id: "anime-list"});
