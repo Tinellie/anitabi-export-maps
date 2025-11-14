@@ -292,14 +292,15 @@ async function parseAnimePoints(points) {
         let name = point.cn ?? point.name ?? point.id ?? "";
         point.originLink ??= point.originUrl
         let description = [
-            `[${anime_name}]` +
+            point.image ? `<img src="${point.image}"/>` : "",
+            `[${anime_name}]`,
             (point.s ? ` 时间: ${point.s}` : "") + (point.ep ? ` 集数: ${point.ep} ` : ""),
             (point.cn && point.name) ? ` (原名: ${point.name})` : "",
             point.mark,
             (point.origin || point.originLink) ? `(origin - ${point.origin ?? point.originLink}${
                 point.origin && point.originLink ? ` | ${point.originLink}` : ""
             })`: ""
-        ].map(s => (s??"")?.trim()).filter(s => s && s.length > 0).join('\n');
+        ].map(s => (s??"")?.trim()).filter(s => s && s.length > 0).join('<br/>');
         location += `
             <Placemark>
                 <name><![CDATA[${name}]]></name>
