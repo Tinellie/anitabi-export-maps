@@ -378,21 +378,29 @@ async function getAnimeCollectionsPoints(collections) {
     return [animes, points];
 }
 
-
-async function getBangumiCollections(id, subject = 2, type = 2) {
-    let offset = 0
-    let total = null
+/** @param {number} id bangumi item id
+ * @param {[number]} subjects 1.book | 2.anime | 3.music | 4.game | 6.sanjiken
+ * @param {[number]} types 1.planed | 2.watching | 3.watched | 4.paused | 5.dropped
+ * @return {Promise<[{id : number, name : string}]>} collection of { id, name }
+ * */
+async function getBangumiCollections(id, subjects = [2], types = [2]) {
+    console.warn("Get BGM Collections", id, subjects);
     let collections = []
-    while (! total || offset < total) {
-        const url = `https://api.bgm.tv/v0/users/${id}/collections?${
-            subject ? `subject_type=${subject}&` : ""
-        }type=${type}&limit=${BGM_COLLECTION_OFFSET}&offset=${offset}`
-        console.log("FETCH: ", url)
-        let res = await (await fetch(url)).json();
-        console.log(res)
-        collections.push(...res.data);
-        total = res.total;
-        offset += BGM_COLLECTION_OFFSET;
+    for (const subject of subjects) {
+        for (const type of types) {
+            let offset = 0
+            let total = null
+            while (typeof total !== "number" || offset < total) {
+                const url = `https://api.bgm.tv/v0/users/${id}/collections?`
+                    +`subject_type=${subject}&type=${type}&limit=${BGM_COLLECTION_OFFSET}&offset=${offset}`
+                console.log("FETCH: ", url)
+                let res = await (await fetch(url)).json();
+                console.log(res)
+                collections.push(...res.data);
+                total = res.total;
+                offset += BGM_COLLECTION_OFFSET;
+            }
+        }
     }
     return collections.map(item => ({
         id: item.subject.id,
@@ -524,6 +532,20 @@ const CSS = `
 
             &:focus {
                 background-color: var(--c-darker);
+            }
+        }
+
+        & .checkbox-row {
+            display: flex;
+            flex-direction: row;
+            justify-content: left;
+            gap: 10px;
+            & span {
+                justify-content: center;
+                gap: 2px;
+            }
+            & .checkbox {
+                margin: 0;
             }
         }
 
@@ -685,32 +707,47 @@ const CSS = `
 
     }
 
+    
     #bgm-panel {
-        height: 24px;
-
         display: flex;
-        flex-direction: row;
-        justify-content: center;
-        align-items: center;
+        flex-direction: column;
+        
         gap: 5px;
-
-        & * {
-            white-space: nowrap;
+        
+        & > #bgm-panel-title {
+            margin-bottom: 5px;
+            padding-bottom: 5px;
+            font-size: 14px;
+            border-bottom: 1px solid var(--c-dark);
         }
+        
+        & > span {
+            height: 24px;
 
-        & > #bgm-id-input-label {
-            width: fit-content;
-            height: fit-content;
-        }
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+            align-items: center;
+            gap: 5px;
 
-        & > #bgm-id-input {
-            flex: 1;
-            width: 0;
-        }
+            & * {
+                white-space: nowrap;
+            }
 
-        & > #bgm-fetch-button {
-            height: 100%;
-            flex: none;
+            & > #bgm-id-input-label {
+                width: fit-content;
+                height: fit-content;
+            }
+
+            & > #bgm-id-input {
+                flex: 1;
+                width: 0;
+            }
+
+            & > #bgm-fetch-button {
+                height: 100%;
+                flex: none;
+            }
         }
     }
 
@@ -724,6 +761,7 @@ const CSS = `
         flex: 1;
         width: 0;
     }
+    
 `
 
 let mouse_location = [0, 0];
@@ -896,7 +934,22 @@ const user = (() => {
         get_selected_collection() {
             return this.collections.filter(x => this.selected_animes.includes(x.id));
         },
+        /**@type {string}*/
         bgm_id: localStorage.getItem("bgm_id"),
+        /**@type {Array<number>}*/
+        bgm_subject_type_data: JSON.parse(localStorage.getItem("bgm_subject_type_status")) ?? [2],
+        /**@type {Array<number>}*/
+        get bgm_subject_type() { return this.bgm_subject_type_data },
+        /**@param {Array<number>} v*/
+        set bgm_subject_type(v) {
+            console.warn(`Subject SET ${v}`); this.bgm_subject_type_data = v; localStorage.setItem("bgm_subject_type", `[${v.toString()}]`) },
+        /**@type {Array<number>}*/
+        bgm_collection_type_data: JSON.parse(localStorage.getItem("bgm_collection_type")) ?? [2],
+        /**@type {Array<number>}*/
+        get bgm_collection_type() { return this.bgm_collection_type_data },
+        /**@param {Array<number>} v*/
+        set bgm_collection_type(v) {
+            console.warn(`Collection SET ${v}`); this.bgm_collection_type_data = v; localStorage.setItem("bgm_collection_type", `[${v.toString()}]`) }
     }.init()
 })()
 
@@ -932,7 +985,7 @@ function addPanel(parent) {
 
 
 // region add select_all_button
-    let select_all_component = addElement("span", {id: "list-edit-wrapper"});
+    let select_all_component = addElement("span", {id: "select-all-wrapper"});
     let list_select_all_button = addElement("button", {
         id: "list-select-all-button",
     })
@@ -1174,10 +1227,57 @@ function addCheckbox(id, attr = {}, checked = false) {
 }
 
 function getBangumiComponent(refresh_list) {
+    let title = addElement("p", {id: "bgm-panel-title", innerText: "从Bangumi导入"})
+    let panel = addElement("div", {id: "bgm-panel"});
+    panel.append(title);
 
-    let bgm_panel = addElement("span", {id: "bgm-panel"});
-    let bgm_id_input_label = addElement("label", {id: "bgm-id-input-label", innerText: "Bangumi ID"});
-    let bgm_id_input = addElement("input", {id: "bgm-id-input", type: "text", value: user.bgm_id, onchange: e => {
+    // let subject_type_wrapper = addElement("span", {id: "bgm-subject-type-wrapper", className: "checkbox-row"});
+    // [ "书籍", "动画", "音乐", "游戏", null, "三次元" ].forEach((x, i) => {
+    //     user.bgm_subject_type.push(false)
+    //     if (!x) return;
+    //     let wrapper = addElement("span");
+    //     let checkbox = addElement("input", {className: "checkbox", type: "checkbox", onchange: e => {
+    //             user.bgm_subject_type[i] = e.target.checked;
+    //         }});
+    //     let label = addElement("p", {className: "checkbox-label", innerText: x});
+    //     wrapper.append(checkbox, label);
+    //
+    //     subject_type_wrapper.append(wrapper);
+    // });
+    let [subject_type_wrapper, collection_type_wrapper] = [
+        { key: "subject",
+            get_data: () => user.bgm_subject_type,
+            set_data: (v) => user.bgm_subject_type = v, items: ["书籍", "动画", "音乐", "游戏", null, "三次元"] },
+        { ket: "collection",
+            get_data: () => user.bgm_collection_type,
+            set_data: (v) => user.bgm_collection_type = v, items: ["想看", "看过", "在看", "搁置", "抛弃"] },]
+    .map(item => {
+        let wrapper = addElement("span", {id: `bgm-${item.key}-type-wrapper`, className: "checkbox-row"});
+        item.items.forEach((x, i) => {
+            if (!x) return;
+            let item_wrapper = addElement("span");
+            let checkbox = addElement("input", {
+                name: `${item.key}-checkbox${i}`,
+                className: "checkbox", type: "checkbox", onchange: e => {
+                    if (e.target.checked)
+                        item.set_data([...item.get_data(), i+1]);
+                    else
+                        item.set_data(item.get_data().filter(x => x !== i+1))
+                    console.warn(item.get_data())
+                }, checked: item.get_data().indexOf(i+1) !== -1
+            });
+            let label = addElement("p", {className: "checkbox-label", innerText: x});
+            item_wrapper.append(checkbox, label);
+
+            wrapper.append(item_wrapper);
+        });
+        return wrapper;
+    })
+
+
+    let id_input_wrapper = addElement("span", {id: "bgm-id-input-wrapper"});
+    let id_input_label = addElement("label", {id: "bgm-id-input-label", innerText: "UID"});
+    let id_input = addElement("input", {id: "bgm-id-input", type: "text", value: user.bgm_id, onchange: e => {
             user.bgm_id = e.target.value;
             localStorage.setItem("bgm_id", user.bgm_id);
         }});
@@ -1185,14 +1285,17 @@ function getBangumiComponent(refresh_list) {
         id: "bgm-fetch-button",
         innerText: "获取",
         onclick: ev => {
-            getBangumiCollections(user.bgm_id).then((res) => {
+            getBangumiCollections(user.bgm_id, user.bgm_subject_type, user.bgm_collection_type).then((res) => {
                 console.log("BGM Collection: ", res)
                 user.set_collections(res);
             })
         }});
-    bgm_panel.append(bgm_id_input_label, bgm_id_input, bgm_fetch_button)
+    id_input_wrapper.append(id_input_label, id_input, bgm_fetch_button)
 
-    return bgm_panel
+    let filter_wrapper = addElement("div", {id: "bgm-filter-wrapper"});
+    filter_wrapper.append(subject_type_wrapper, collection_type_wrapper);
+    panel.append(id_input_wrapper, filter_wrapper);
+    return panel
 }
 
 
